@@ -1595,12 +1595,15 @@ button {
     </div>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/12.7.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.7.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore-compat.js"></script>
 <script>
 
 const BC220_MAX_ACCESS_GROUPS = 8;
 const TIME_SLOTS_PER_GROUP = 3;
 
-const doors = [
+const DEFAULT_DOORS = [
     { name: "Office Main Entrance", status: "online", controller: "BC220" },
     { name: "Conference Room", status: "offline", controller: "BC220" },
     { name: "System Server Room", status: "online", controller: "BC220" },
@@ -1609,6 +1612,18 @@ const doors = [
     { name: "Gym yoga Room", status: "online", controller: "BC220" },
     { name: "Swimming Pool Area", status: "offline", controller: "BC220" }
 ];
+
+// Set this from another script tag or replace the placeholder values directly.
+const FIREBASE_CONFIG = window.DOOR_APP_FIREBASE_CONFIG || {
+    apiKey: "AIzaSyDHJH__KIApExa1zqOxHnGFKR3FUl7PtrY",
+    authDomain: "door-5bff1.firebaseapp.com",
+    projectId: "door-5bff1",
+    storageBucket: "door-5bff1.firebasestorage.app",
+    messagingSenderId: "570271564761",
+    appId: "1:570271564761:web:594a41a9919a7dd5a6cfc8"
+};
+
+let doors = [];
 
 /** @type {Record<string, { id: string, name: string, memberCount: number, schedule: object }[]>} */
 const accessGroupsByDoor = {};
@@ -1622,6 +1637,8 @@ let pendingDeleteAccessGroupId = null;
 /** @type {{ id: string, fullName: string, email: string, username: string, password: string, phone: string, shareLink: boolean, mobileApp: boolean, phoneTap: boolean, remote: boolean, keyFob: boolean, fobId: string, doorAccess: Record<string, string[]>, createdAt: string }[]} */
 let usersRegistry = [];
 let editingUserId = null;
+let db = null;
+let firebaseReady = false;
 
 const ICON_EDIT_ACCESS_GROUP = `
 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1643,6 +1660,213 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function isFirebaseConfigured() {
+    return !!(
+        FIREBASE_CONFIG &&
+        FIREBASE_CONFIG.apiKey &&
+        FIREBASE_CONFIG.authDomain &&
+        FIREBASE_CONFIG.projectId &&
+        FIREBASE_CONFIG.appId
+    );
+}
+
+function slugifyDoorName(name) {
+    return String(name || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || `door-${Date.now()}`;
+}
+
+function generateLocalId(prefix) {
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getDoorDocIdByName(name) {
+    return doors.find(d => d.name === name)?.id || slugifyDoorName(name);
+}
+
+function clearAccessGroupsState() {
+    Object.keys(accessGroupsByDoor).forEach(key => delete accessGroupsByDoor[key]);
+}
+
+function replaceAccessGroupsState(next) {
+    clearAccessGroupsState();
+    Object.entries(next).forEach(([doorName, groups]) => {
+        accessGroupsByDoor[doorName] = groups;
+    });
+}
+
+function getDefaultDoorDocs() {
+    const now = new Date().toISOString();
+    return DEFAULT_DOORS.map(door => ({
+        id: slugifyDoorName(door.name),
+        ...door,
+        createdAt: now
+    }));
+}
+
+function normalizeDoorDoc(docSnap) {
+    const data = docSnap.data() || {};
+    return {
+        id: docSnap.id,
+        name: data.name || docSnap.id,
+        status: data.status || "offline",
+        controller: data.controller || "BC220",
+        createdAt: data.createdAt || ""
+    };
+}
+
+function normalizeAccessGroupDoc(docSnap) {
+    const data = docSnap.data() || {};
+    return {
+        id: docSnap.id,
+        name: data.name || "",
+        memberCount: typeof data.memberCount === "number" ? data.memberCount : 0,
+        schedule: {
+            weekdays: Array.isArray(data.schedule?.weekdays) ? data.schedule.weekdays : [],
+            startDate: data.schedule?.startDate || "",
+            endDate: data.schedule?.endDate || "",
+            timeSlots: Array.isArray(data.schedule?.timeSlots) ? data.schedule.timeSlots : []
+        }
+    };
+}
+
+function normalizeUserDoc(docSnap) {
+    const data = docSnap.data() || {};
+    return {
+        id: docSnap.id,
+        fullName: data.fullName || "",
+        email: data.email || "",
+        username: data.username || "",
+        password: data.password || "",
+        phone: data.phone || "",
+        shareLink: !!data.shareLink,
+        mobileApp: !!data.mobileApp,
+        phoneTap: !!data.phoneTap,
+        remote: !!data.remote,
+        keyFob: !!data.keyFob,
+        fobId: data.fobId || "",
+        doorAccess: data.doorAccess && typeof data.doorAccess === "object" ? data.doorAccess : {},
+        createdAt: data.createdAt || ""
+    };
+}
+
+async function ensureFirebaseReady() {
+    if (!isFirebaseConfigured() || !window.firebase) return false;
+    if (!firebase.apps.length) {
+        firebase.initializeApp(FIREBASE_CONFIG);
+    }
+    if (!firebase.auth().currentUser) {
+        await firebase.auth().signInAnonymously();
+    }
+    db = firebase.firestore();
+    firebaseReady = true;
+    return true;
+}
+
+async function seedDefaultDoorsIfNeeded() {
+    const snap = await db.collection("doors").limit(1).get();
+    if (!snap.empty) return;
+
+    const batch = db.batch();
+    getDefaultDoorDocs().forEach(door => {
+        const ref = db.collection("doors").doc(door.id);
+        batch.set(ref, {
+            name: door.name,
+            status: door.status,
+            controller: door.controller,
+            createdAt: door.createdAt
+        });
+    });
+    await batch.commit();
+}
+
+async function loadStateFromFirestore() {
+    await seedDefaultDoorsIfNeeded();
+
+    const doorsSnap = await db.collection("doors").get();
+    const loadedDoors = doorsSnap.docs.map(normalizeDoorDoc).sort((a, b) => a.name.localeCompare(b.name));
+    const groupsByDoorName = {};
+
+    await Promise.all(loadedDoors.map(async door => {
+        const groupsSnap = await db.collection("doors").doc(door.id).collection("accessGroups").get();
+        groupsByDoorName[door.name] = groupsSnap.docs
+            .map(normalizeAccessGroupDoc)
+            .sort((a, b) => a.name.localeCompare(b.name));
+    }));
+
+    const usersSnap = await db.collection("users").get();
+    const loadedUsers = usersSnap.docs
+        .map(normalizeUserDoc)
+        .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+    doors = loadedDoors;
+    usersRegistry = loadedUsers;
+    replaceAccessGroupsState(groupsByDoorName);
+}
+
+async function initializeAppData() {
+    try {
+        const ready = await ensureFirebaseReady();
+        if (ready) {
+            await loadStateFromFirestore();
+        } else {
+            doors = getDefaultDoorDocs();
+            usersRegistry = [];
+            clearAccessGroupsState();
+            console.warn("Firebase is not configured yet. Using in-memory data only.");
+        }
+    } catch (error) {
+        console.error("Failed to initialize Firebase data:", error);
+        doors = getDefaultDoorDocs();
+        usersRegistry = [];
+        clearAccessGroupsState();
+        alert("Firebase could not load, so the app is using temporary in-memory data right now. Check your Firebase config and setup.");
+    }
+
+    renderDoors(doors);
+    renderUsersTable();
+}
+
+function formatDoorCreatedAt(iso) {
+    if (!iso) return "—";
+    try {
+        return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    } catch {
+        return iso;
+    }
+}
+
+async function saveUserToStore(user) {
+    if (!firebaseReady || !db) return;
+    await db.collection("users").doc(user.id).set(user);
+}
+
+async function deleteUserFromStore(userId) {
+    if (!firebaseReady || !db) return;
+    await db.collection("users").doc(userId).delete();
+}
+
+async function saveAccessGroupToStore(doorName, group) {
+    if (!firebaseReady || !db) return;
+    const doorId = getDoorDocIdByName(doorName);
+    await db.collection("doors").doc(doorId).collection("accessGroups").doc(group.id).set(group);
+}
+
+async function deleteAccessGroupFromStore(doorName, groupId, affectedUsers) {
+    if (!firebaseReady || !db) return;
+    const doorId = getDoorDocIdByName(doorName);
+    const batch = db.batch();
+
+    batch.delete(db.collection("doors").doc(doorId).collection("accessGroups").doc(groupId));
+    affectedUsers.forEach(user => {
+        batch.set(db.collection("users").doc(user.id), user);
+    });
+
+    await batch.commit();
+}
+
 function renderDoors(list) {
     const table = document.getElementById("doorTable");
     table.innerHTML = "";
@@ -1658,7 +1882,7 @@ function renderDoors(list) {
             <td class="status ${door.status}">
                 ${door.status === "online" ? "● Online" : "● Offline"}
             </td>
-            <td>Apr 7, 2026, 11:17 PM</td>
+            <td>${escapeHtml(formatDoorCreatedAt(door.createdAt))}</td>
             <td class="action">
                 <button type="button" class="btn-manage-access" data-door="${safeName}" title="Open access groups for this door">
                     ${ICON_MANAGE_ACCESS}
@@ -1989,12 +2213,18 @@ function renderUsersTable() {
     });
 }
 
-function deleteUser(userId) {
+async function deleteUser(userId) {
     const user = usersRegistry.find(u => u.id === userId);
     if (!user) return;
     if (!confirm(`Delete "${user.fullName}"? This cannot be undone.`)) return;
-    usersRegistry = usersRegistry.filter(u => u.id !== userId);
-    renderUsersTable();
+    try {
+        await deleteUserFromStore(userId);
+        usersRegistry = usersRegistry.filter(u => u.id !== userId);
+        renderUsersTable();
+    } catch (error) {
+        console.error("Failed to delete user:", error);
+        alert("Could not delete this user. Please try again.");
+    }
 }
 
 function showUsersListPanelOnly() {
@@ -2071,7 +2301,7 @@ function resetAddUserForm() {
     syncAllDoorGroupPanels();
 }
 
-function submitAddUser(e) {
+async function submitAddUser(e) {
     e.preventDefault();
     const doorChecks = document.querySelectorAll('#userDoorChecklist input[name="userDoor"]:checked');
     if (doorChecks.length === 0) {
@@ -2119,24 +2349,37 @@ function submitAddUser(e) {
         return;
     }
 
+    let nextUser;
     if (editingUserId) {
         const idx = usersRegistry.findIndex(u => u.id === editingUserId);
         if (idx < 0) return;
         const prev = usersRegistry[idx];
-        const next = { ...prev, ...payload };
+        nextUser = { ...prev, ...payload };
         if (!payload.password.trim()) {
-            next.password = prev.password;
+            nextUser.password = prev.password;
         }
-        usersRegistry[idx] = next;
     } else {
-        usersRegistry.push({
+        nextUser = {
             ...payload,
-            id: "usr_" + Date.now(),
+            id: generateLocalId("usr"),
             createdAt: new Date().toISOString()
-        });
+        };
     }
 
-    showUsersListPanelOnly();
+    try {
+        await saveUserToStore(nextUser);
+        if (editingUserId) {
+            const idx = usersRegistry.findIndex(u => u.id === editingUserId);
+            if (idx < 0) return;
+            usersRegistry[idx] = nextUser;
+        } else {
+            usersRegistry.push(nextUser);
+        }
+        showUsersListPanelOnly();
+    } catch (error) {
+        console.error("Failed to save user:", error);
+        alert("Could not save this user. Please try again.");
+    }
 }
 
 function showDoorList() {
@@ -2279,7 +2522,7 @@ function closeDeleteAccessGroupModal() {
     modal.setAttribute("aria-hidden", "true");
 }
 
-function confirmDeleteAccessGroup() {
+async function confirmDeleteAccessGroup() {
     const groupId = pendingDeleteAccessGroupId;
     if (!groupId || !selectedDoorName) {
         closeDeleteAccessGroupModal();
@@ -2292,8 +2535,8 @@ function confirmDeleteAccessGroup() {
         return;
     }
 
-    accessGroupsByDoor[selectedDoorName] = list.filter(g => g.id !== groupId);
-    usersRegistry = usersRegistry.map(user => {
+    const nextGroups = list.filter(g => g.id !== groupId);
+    const nextUsers = usersRegistry.map(user => {
         const assigned = user.doorAccess?.[selectedDoorName];
         if (!assigned || !assigned.includes(groupId)) return user;
         return {
@@ -2304,9 +2547,18 @@ function confirmDeleteAccessGroup() {
             }
         };
     });
+    const changedUsers = nextUsers.filter((user, idx) => user !== usersRegistry[idx]);
 
-    closeDeleteAccessGroupModal();
-    renderAccessGroupsPanel();
+    try {
+        await deleteAccessGroupFromStore(selectedDoorName, groupId, changedUsers);
+        accessGroupsByDoor[selectedDoorName] = nextGroups;
+        usersRegistry = nextUsers;
+        closeDeleteAccessGroupModal();
+        renderAccessGroupsPanel();
+    } catch (error) {
+        console.error("Failed to delete access group:", error);
+        alert("Could not delete this time passage group. Please try again.");
+    }
 }
 
 const WEEKDAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -2583,7 +2835,7 @@ function addAccessGroupForDoor() {
     openCreateAccessGroupModal();
 }
 
-function submitCreateAccessGroup() {
+async function submitCreateAccessGroup() {
     const errEl = document.getElementById("modalFormError");
     errEl.textContent = "";
 
@@ -2630,6 +2882,7 @@ function submitCreateAccessGroup() {
         accessGroupsByDoor[selectedDoorName] = [];
     }
 
+    let nextGroup;
     if (editingAccessGroupId) {
         const list = accessGroupsByDoor[selectedDoorName];
         const idx = list.findIndex(g => g.id === editingAccessGroupId);
@@ -2637,7 +2890,7 @@ function submitCreateAccessGroup() {
             errEl.textContent = "Could not find this access group to update.";
             return;
         }
-        list[idx] = {
+        nextGroup = {
             ...list[idx],
             name,
             schedule: {
@@ -2648,8 +2901,8 @@ function submitCreateAccessGroup() {
             }
         };
     } else {
-        accessGroupsByDoor[selectedDoorName].push({
-            id: "ag_" + Date.now(),
+        nextGroup = {
+            id: generateLocalId("ag"),
             name,
             memberCount: 0,
             schedule: {
@@ -2658,17 +2911,36 @@ function submitCreateAccessGroup() {
                 endDate,
                 timeSlots
             }
-        });
+        };
     }
 
     const savedDoor = selectedDoorName;
     const wasFromUserForm = _tpgFromUserForm;
-    closeCreateAccessGroupModal();
+    try {
+        await saveAccessGroupToStore(selectedDoorName, nextGroup);
 
-    if (wasFromUserForm) {
-        refreshUserDoorGroupsPanel(savedDoor);
-    } else {
-        renderAccessGroupsPanel();
+        if (editingAccessGroupId) {
+            const list = accessGroupsByDoor[selectedDoorName];
+            const idx = list.findIndex(g => g.id === editingAccessGroupId);
+            if (idx === -1) {
+                errEl.textContent = "Could not find this access group to update.";
+                return;
+            }
+            list[idx] = nextGroup;
+        } else {
+            accessGroupsByDoor[selectedDoorName].push(nextGroup);
+        }
+
+        closeCreateAccessGroupModal();
+
+        if (wasFromUserForm) {
+            refreshUserDoorGroupsPanel(savedDoor);
+        } else {
+            renderAccessGroupsPanel();
+        }
+    } catch (error) {
+        console.error("Failed to save access group:", error);
+        errEl.textContent = "Could not save this time passage group. Please try again.";
     }
 }
 
@@ -2682,9 +2954,15 @@ document.getElementById("createGroupModal").addEventListener("click", e => {
     if (e.target.id === "createGroupModal") closeCreateAccessGroupModal();
 });
 
+document.getElementById("deleteGroupModal").addEventListener("click", e => {
+    if (e.target.id === "deleteGroupModal") closeDeleteAccessGroupModal();
+});
+
 document.addEventListener("keydown", e => {
     if (e.key === "Escape" && !document.getElementById("createGroupModal").classList.contains("hidden")) {
         closeCreateAccessGroupModal();
+    } else if (e.key === "Escape" && !document.getElementById("deleteGroupModal").classList.contains("hidden")) {
+        closeDeleteAccessGroupModal();
     }
 });
 
@@ -2730,7 +3008,8 @@ wireMenuKey(document.getElementById("menuUsers"), showUsersMainView);
 wireMenuKey(document.getElementById("menuDoorAccessGroup"), showDoorList);
 
 syncUserDeviceAccessVisibility();
-renderDoors(doors);
+renderDoors([]);
+initializeAppData();
 
 </script>
 
