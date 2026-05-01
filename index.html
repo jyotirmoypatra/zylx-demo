@@ -720,6 +720,60 @@ button {
     min-height: 1.2em;
 }
 
+.delete-modal-copy {
+    margin: 8px 0 0;
+    color: #d7d7d7;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.delete-modal-usage {
+    margin-top: 18px;
+    padding: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.delete-modal-usage.hidden {
+    display: none;
+}
+
+.delete-modal-usage-title {
+    margin: 0 0 10px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #bfbfbf;
+}
+
+.delete-modal-user-list {
+    margin: 0;
+    padding-left: 18px;
+    color: #fff;
+    font-size: 14px;
+}
+
+.delete-modal-user-list li + li {
+    margin-top: 8px;
+}
+
+.btn-delete-confirm {
+    margin: 0;
+    padding: 10px 20px;
+    background: #c94747;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.btn-delete-confirm:hover {
+    background: #db5757;
+}
+
 /* Add User page */
 .user-add-view .user-form-card {
     width: 100%;
@@ -1526,6 +1580,21 @@ button {
     </div>
 </div>
 
+<div id="deleteGroupModal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="deleteGroupModalTitle">
+        <h2 id="deleteGroupModalTitle">Delete Time Passage Group</h2>
+        <p class="delete-modal-copy" id="deleteGroupModalMessage"></p>
+        <div class="delete-modal-usage hidden" id="deleteGroupUsageBox">
+            <p class="delete-modal-usage-title" id="deleteGroupUsageTitle"></p>
+            <ol class="delete-modal-user-list" id="deleteGroupUserList"></ol>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn-cancel" id="btnDeleteGroupCancel">CANCEL</button>
+            <button type="button" class="btn-delete-confirm" id="btnDeleteGroupConfirm">CONFIRM DELETE</button>
+        </div>
+    </div>
+</div>
+
 <script>
 
 const BC220_MAX_ACCESS_GROUPS = 8;
@@ -1548,6 +1617,7 @@ let selectedDoorName = "";
 let modalVisibleTimeSlots = 1;
 let editingAccessGroupId = null;
 let _tpgFromUserForm = false;
+let pendingDeleteAccessGroupId = null;
 
 /** @type {{ id: string, fullName: string, email: string, username: string, password: string, phone: string, shareLink: boolean, mobileApp: boolean, phoneTap: boolean, remote: boolean, keyFob: boolean, fobId: string, doorAccess: Record<string, string[]>, createdAt: string }[]} */
 let usersRegistry = [];
@@ -2152,18 +2222,90 @@ function renderAccessGroupsPanel() {
     });
 
     panel.querySelectorAll(".btn-delete-access-group").forEach(btn => {
-        btn.addEventListener("click", () => deleteAccessGroup(btn.getAttribute("data-group-id")));
+        btn.addEventListener("click", () => openDeleteAccessGroupModal(btn.getAttribute("data-group-id")));
     });
 }
 
-function deleteAccessGroup(groupId) {
+function getUsersUsingAccessGroup(doorName, groupId) {
+    return usersRegistry.filter(user => {
+        const assignedGroups = user.doorAccess?.[doorName] || [];
+        return assignedGroups.includes(groupId);
+    });
+}
+
+function openDeleteAccessGroupModal(groupId) {
     if (!groupId || !selectedDoorName) return;
     const list = accessGroupsByDoor[selectedDoorName];
     if (!list) return;
     const group = list.find(g => g.id === groupId);
     if (!group) return;
-    if (!confirm(`Delete "${group.name}"? This cannot be undone.`)) return;
+
+    const affectedUsers = getUsersUsingAccessGroup(selectedDoorName, groupId);
+    const count = affectedUsers.length;
+    const messageEl = document.getElementById("deleteGroupModalMessage");
+    const usageBox = document.getElementById("deleteGroupUsageBox");
+    const usageTitle = document.getElementById("deleteGroupUsageTitle");
+    const userList = document.getElementById("deleteGroupUserList");
+    const modal = document.getElementById("deleteGroupModal");
+
+    if (!messageEl || !usageBox || !usageTitle || !userList || !modal) return;
+
+    pendingDeleteAccessGroupId = groupId;
+
+    if (count > 0) {
+        messageEl.textContent = `"${group.name}" is currently assigned to ${count} user${count === 1 ? "" : "s"}. Deleting this access group will remove their assigned access permissions, and the user may no longer be able to access the associated doors. This action cannot be undone.`;
+        usageTitle.textContent = `${count} user${count === 1 ? "" : "s"} using this time passage group`;
+        userList.innerHTML = affectedUsers.map(user =>
+            `<li>${escapeHtml(user.fullName)}${user.email ? ` (${escapeHtml(user.email)})` : ""}</li>`
+        ).join("");
+        usageBox.classList.remove("hidden");
+    } else {
+        messageEl.textContent = `"${group.name}" will be deleted. Once done, this cannot be undone.`;
+        usageTitle.textContent = "";
+        userList.innerHTML = "";
+        usageBox.classList.add("hidden");
+    }
+
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    document.getElementById("btnDeleteGroupConfirm").focus();
+}
+
+function closeDeleteAccessGroupModal() {
+    pendingDeleteAccessGroupId = null;
+    const modal = document.getElementById("deleteGroupModal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.setAttribute("aria-hidden", "true");
+}
+
+function confirmDeleteAccessGroup() {
+    const groupId = pendingDeleteAccessGroupId;
+    if (!groupId || !selectedDoorName) {
+        closeDeleteAccessGroupModal();
+        return;
+    }
+
+    const list = accessGroupsByDoor[selectedDoorName];
+    if (!list) {
+        closeDeleteAccessGroupModal();
+        return;
+    }
+
     accessGroupsByDoor[selectedDoorName] = list.filter(g => g.id !== groupId);
+    usersRegistry = usersRegistry.map(user => {
+        const assigned = user.doorAccess?.[selectedDoorName];
+        if (!assigned || !assigned.includes(groupId)) return user;
+        return {
+            ...user,
+            doorAccess: {
+                ...user.doorAccess,
+                [selectedDoorName]: assigned.filter(id => id !== groupId)
+            }
+        };
+    });
+
+    closeDeleteAccessGroupModal();
     renderAccessGroupsPanel();
 }
 
@@ -2533,6 +2675,8 @@ function submitCreateAccessGroup() {
 document.getElementById("btnAddAccessGroup").addEventListener("click", addAccessGroupForDoor);
 document.getElementById("btnModalCancel").addEventListener("click", closeCreateAccessGroupModal);
 document.getElementById("btnModalCreate").addEventListener("click", submitCreateAccessGroup);
+document.getElementById("btnDeleteGroupCancel").addEventListener("click", closeDeleteAccessGroupModal);
+document.getElementById("btnDeleteGroupConfirm").addEventListener("click", confirmDeleteAccessGroup);
 
 document.getElementById("createGroupModal").addEventListener("click", e => {
     if (e.target.id === "createGroupModal") closeCreateAccessGroupModal();
