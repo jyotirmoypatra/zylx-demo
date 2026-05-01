@@ -363,9 +363,37 @@ button {
 
 .groups-table th.groups-col-action,
 .groups-table td.groups-col-action {
-    width: 56px;
+    width: 96px;
     text-align: center;
     vertical-align: middle;
+    white-space: nowrap;
+}
+
+.groups-action-btns {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.btn-delete-access-group {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    margin: 0;
+    border: 1px solid #6b3d3d;
+    border-radius: 8px;
+    background: #281515;
+    color: #ff9a9a;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-delete-access-group:hover {
+    background: #3a2020;
+    border-color: #b35050;
 }
 
 .btn-edit-access-group {
@@ -1146,9 +1174,37 @@ button {
 }
 
 .users-table .users-col-action {
-    width: 76px;
+    width: 100px;
     text-align: center;
     vertical-align: middle;
+    white-space: nowrap;
+}
+
+.users-action-btns {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.users-btn-delete {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    margin: 0;
+    border: 1px solid #6b3d3d;
+    border-radius: 8px;
+    background: #281515;
+    color: #ff9a9a;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.users-btn-delete:hover {
+    background: #3a2020;
+    border-color: #b35050;
 }
 
 .users-empty {
@@ -1842,7 +1898,14 @@ function renderUsersTable() {
             <td>${escapeHtml(u.email)}</td>
             <td>${escapeHtml(formatUserCreatedAt(u.createdAt))}</td>
             <td class="users-col-action">
-                <button type="button" class="users-btn-edit" data-user-id="${escapeHtml(u.id)}" title="Edit user">${ICON_EDIT_ACCESS_GROUP}</button>
+                <div class="users-action-btns">
+                    <button type="button" class="users-btn-edit" data-user-id="${escapeHtml(u.id)}" title="Edit user">${ICON_EDIT_ACCESS_GROUP}</button>
+                    <button type="button" class="users-btn-delete" data-user-id="${escapeHtml(u.id)}" title="Delete user" aria-label="Delete ${escapeHtml(u.fullName)}">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                        </svg>
+                    </button>
+                </div>
             </td>
         </tr>
     `).join("");
@@ -1850,6 +1913,18 @@ function renderUsersTable() {
     tbody.querySelectorAll(".users-btn-edit").forEach(btn => {
         btn.addEventListener("click", () => openUserFormEdit(btn.getAttribute("data-user-id")));
     });
+
+    tbody.querySelectorAll(".users-btn-delete").forEach(btn => {
+        btn.addEventListener("click", () => deleteUser(btn.getAttribute("data-user-id")));
+    });
+}
+
+function deleteUser(userId) {
+    const user = usersRegistry.find(u => u.id === userId);
+    if (!user) return;
+    if (!confirm(`Delete "${user.fullName}"? This cannot be undone.`)) return;
+    usersRegistry = usersRegistry.filter(u => u.id !== userId);
+    renderUsersTable();
 }
 
 function showUsersListPanelOnly() {
@@ -1956,6 +2031,24 @@ function submitAddUser(e) {
         return;
     }
 
+    // Device Access validation
+    if (!payload.shareLink && !payload.mobileApp && !payload.keyFob) {
+        alert("Device Access: Please enable at least one access method — Share Link, Mobile App, or Key Fob/Card.");
+        document.getElementById("toggleShareLink").closest(".toggle-row").scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+    }
+    if (payload.mobileApp && !payload.phoneTap && !payload.remote) {
+        alert("Mobile App is enabled — please also enable at least one of: Phone Tap or Remote.");
+        document.getElementById("togglePhoneTap").closest(".toggle-row").scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+    }
+    if (payload.keyFob && !payload.fobId.trim()) {
+        alert("Key Fob/Card is enabled — Physical Key Fob/Card ID cannot be blank.");
+        document.getElementById("userFobId").focus();
+        document.getElementById("userFobId").scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+    }
+
     if (editingUserId) {
         const idx = usersRegistry.findIndex(u => u.id === editingUserId);
         if (idx < 0) return;
@@ -2026,9 +2119,16 @@ function renderAccessGroupsPanel() {
             <td>${formatScheduleWeekdays(g.schedule)}</td>
             <td class="time-slots-cell">${formatScheduleTimeSlotRanges(g.schedule)}</td>
             <td class="groups-col-action">
-                <button type="button" class="btn-edit-access-group" data-group-id="${escapeHtml(g.id)}" title="Edit access group" aria-label="Edit ${escapeHtml(g.name)}">
-                    ${ICON_EDIT_ACCESS_GROUP}
-                </button>
+                <div class="groups-action-btns">
+                    <button type="button" class="btn-edit-access-group" data-group-id="${escapeHtml(g.id)}" title="Edit group" aria-label="Edit ${escapeHtml(g.name)}">
+                        ${ICON_EDIT_ACCESS_GROUP}
+                    </button>
+                    <button type="button" class="btn-delete-access-group" data-group-id="${escapeHtml(g.id)}" title="Delete group" aria-label="Delete ${escapeHtml(g.name)}">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                        </svg>
+                    </button>
+                </div>
             </td>
         </tr>
     `).join("");
@@ -2050,6 +2150,21 @@ function renderAccessGroupsPanel() {
     panel.querySelectorAll(".btn-edit-access-group").forEach(btn => {
         btn.addEventListener("click", () => openEditAccessGroup(btn.getAttribute("data-group-id")));
     });
+
+    panel.querySelectorAll(".btn-delete-access-group").forEach(btn => {
+        btn.addEventListener("click", () => deleteAccessGroup(btn.getAttribute("data-group-id")));
+    });
+}
+
+function deleteAccessGroup(groupId) {
+    if (!groupId || !selectedDoorName) return;
+    const list = accessGroupsByDoor[selectedDoorName];
+    if (!list) return;
+    const group = list.find(g => g.id === groupId);
+    if (!group) return;
+    if (!confirm(`Delete "${group.name}"? This cannot be undone.`)) return;
+    accessGroupsByDoor[selectedDoorName] = list.filter(g => g.id !== groupId);
+    renderAccessGroupsPanel();
 }
 
 const WEEKDAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
