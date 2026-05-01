@@ -429,6 +429,56 @@ button {
     border: 1px dashed rgba(51, 51, 51, 0.5);
 }
 
+.section-loader-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-height: 140px;
+    padding: 28px 20px;
+    color: #cfcfcf;
+    font-size: 14px;
+    background: #ffffff0d;
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    border-radius: 10px;
+    border: 1px solid rgba(42, 42, 42, 0.45);
+    box-sizing: border-box;
+}
+
+.section-loader-inline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-height: 96px;
+    width: 100%;
+    color: #cfcfcf;
+    font-size: 14px;
+}
+
+.spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.18);
+    border-top-color: #9effc8;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.btn-loading {
+    opacity: 0.8;
+    cursor: wait;
+    pointer-events: none;
+}
+
 /* Modal */
 .modal-overlay {
     position: fixed;
@@ -1409,6 +1459,7 @@ button {
                     <button type="button" class="btn-add-user" id="btnOpenAddUser">Add user</button>
                 </div>
                 <div class="users-table-card">
+                    <div id="usersLoadingState" class="users-empty user-panel-hidden" role="status"></div>
                     <table class="users-table" id="usersTable">
                         <thead>
                             <tr>
@@ -1639,6 +1690,11 @@ let usersRegistry = [];
 let editingUserId = null;
 let db = null;
 let firebaseReady = false;
+const uiLoadingState = {
+    appInit: false,
+    users: false,
+    accessGroups: false
+};
 
 const ICON_EDIT_ACCESS_GROUP = `
 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1658,6 +1714,26 @@ function escapeHtml(text) {
     const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
+}
+
+function renderLoaderMarkup(label, variant = "card") {
+    const klass = variant === "inline" ? "section-loader-inline" : "section-loader-card";
+    return `<div class="${klass}"><span class="spinner" aria-hidden="true"></span><span>${escapeHtml(label)}</span></div>`;
+}
+
+function setButtonLoading(buttonId, isLoading, loadingText) {
+    const btn = document.getElementById(buttonId);
+    if (!btn) return;
+    if (!btn.dataset.defaultText) {
+        btn.dataset.defaultText = btn.textContent.trim();
+    }
+    btn.disabled = isLoading;
+    btn.classList.toggle("btn-loading", isLoading);
+    btn.textContent = isLoading ? loadingText : btn.dataset.defaultText;
+}
+
+function setUiLoading(section, value) {
+    uiLoadingState[section] = value;
 }
 
 function isFirebaseConfigured() {
@@ -1808,6 +1884,7 @@ async function loadStateFromFirestore() {
 
 async function initializeAppData() {
     try {
+        setUiLoading("appInit", true);
         const ready = await ensureFirebaseReady();
         if (ready) {
             await loadStateFromFirestore();
@@ -1823,10 +1900,15 @@ async function initializeAppData() {
         usersRegistry = [];
         clearAccessGroupsState();
         alert("Firebase could not load, so the app is using temporary in-memory data right now. Check your Firebase config and setup.");
+    } finally {
+        setUiLoading("appInit", false);
     }
 
     renderDoors(doors);
     renderUsersTable();
+    if (selectedDoorName) {
+        renderAccessGroupsPanel();
+    }
 }
 
 function formatDoorCreatedAt(iso) {
@@ -1870,6 +1952,16 @@ async function deleteAccessGroupFromStore(doorName, groupId, affectedUsers) {
 function renderDoors(list) {
     const table = document.getElementById("doorTable");
     table.innerHTML = "";
+
+    if (uiLoadingState.appInit) {
+        table.innerHTML = `<tr><td colspan="4">${renderLoaderMarkup("Loading doors...", "inline")}</td></tr>`;
+        return;
+    }
+
+    if (list.length === 0) {
+        table.innerHTML = `<tr><td colspan="4"><div class="groups-empty">No doors found.</div></td></tr>`;
+        return;
+    }
 
     list.forEach(door => {
         const safeName = encodeURIComponent(door.name);
@@ -2160,7 +2252,20 @@ function renderUsersTable() {
     const tbody = document.getElementById("usersTableBody");
     const table = document.getElementById("usersTable");
     const empty = document.getElementById("usersEmptyState");
-    if (!tbody || !table || !empty) return;
+    const loading = document.getElementById("usersLoadingState");
+    if (!tbody || !table || !empty || !loading) return;
+
+    if (uiLoadingState.appInit || uiLoadingState.users) {
+        table.classList.add("user-panel-hidden");
+        empty.classList.add("user-panel-hidden");
+        loading.classList.remove("user-panel-hidden");
+        loading.innerHTML = renderLoaderMarkup(uiLoadingState.users ? "Saving users..." : "Loading users...");
+        tbody.innerHTML = "";
+        return;
+    }
+
+    loading.classList.add("user-panel-hidden");
+    loading.innerHTML = "";
 
     if (usersRegistry.length === 0) {
         table.classList.add("user-panel-hidden");
@@ -2218,10 +2323,15 @@ async function deleteUser(userId) {
     if (!user) return;
     if (!confirm(`Delete "${user.fullName}"? This cannot be undone.`)) return;
     try {
+        setUiLoading("users", true);
+        renderUsersTable();
         await deleteUserFromStore(userId);
         usersRegistry = usersRegistry.filter(u => u.id !== userId);
+        setUiLoading("users", false);
         renderUsersTable();
     } catch (error) {
+        setUiLoading("users", false);
+        renderUsersTable();
         console.error("Failed to delete user:", error);
         alert("Could not delete this user. Please try again.");
     }
@@ -2297,6 +2407,7 @@ function cancelUserForm() {
 function resetAddUserForm() {
     const form = document.getElementById("addUserForm");
     if (form) form.reset();
+    setButtonLoading("btnUserSave", false);
     syncUserDeviceAccessVisibility();
     syncAllDoorGroupPanels();
 }
@@ -2367,6 +2478,8 @@ async function submitAddUser(e) {
     }
 
     try {
+        setUiLoading("users", true);
+        setButtonLoading("btnUserSave", true, editingUserId ? "SAVING..." : "CREATING...");
         await saveUserToStore(nextUser);
         if (editingUserId) {
             const idx = usersRegistry.findIndex(u => u.id === editingUserId);
@@ -2375,8 +2488,12 @@ async function submitAddUser(e) {
         } else {
             usersRegistry.push(nextUser);
         }
+        setUiLoading("users", false);
+        setButtonLoading("btnUserSave", false);
         showUsersListPanelOnly();
     } catch (error) {
+        setUiLoading("users", false);
+        setButtonLoading("btnUserSave", false);
         console.error("Failed to save user:", error);
         alert("Could not save this user. Please try again.");
     }
@@ -2411,6 +2528,12 @@ function renderAccessGroupsPanel() {
     const countEl = document.getElementById("groupsControllerCount");
     const groups = accessGroupsByDoor[selectedDoorName] || [];
     const door = getDoorByName(selectedDoorName);
+
+    if (uiLoadingState.appInit || uiLoadingState.accessGroups) {
+        countEl.textContent = "";
+        panel.innerHTML = renderLoaderMarkup(uiLoadingState.accessGroups ? "Saving time passage groups..." : "Loading time passage groups...");
+        return;
+    }
 
     if (door && door.controller === "BC220") {
         countEl.textContent =
@@ -2516,6 +2639,7 @@ function openDeleteAccessGroupModal(groupId) {
 
 function closeDeleteAccessGroupModal() {
     pendingDeleteAccessGroupId = null;
+    setButtonLoading("btnDeleteGroupConfirm", false);
     const modal = document.getElementById("deleteGroupModal");
     if (!modal) return;
     modal.classList.add("hidden");
@@ -2550,12 +2674,19 @@ async function confirmDeleteAccessGroup() {
     const changedUsers = nextUsers.filter((user, idx) => user !== usersRegistry[idx]);
 
     try {
+        setUiLoading("accessGroups", true);
+        setButtonLoading("btnDeleteGroupConfirm", true, "DELETING...");
+        renderAccessGroupsPanel();
         await deleteAccessGroupFromStore(selectedDoorName, groupId, changedUsers);
         accessGroupsByDoor[selectedDoorName] = nextGroups;
         usersRegistry = nextUsers;
+        setUiLoading("accessGroups", false);
+        setButtonLoading("btnDeleteGroupConfirm", false);
         closeDeleteAccessGroupModal();
         renderAccessGroupsPanel();
     } catch (error) {
+        setUiLoading("accessGroups", false);
+        setButtonLoading("btnDeleteGroupConfirm", false);
         console.error("Failed to delete access group:", error);
         alert("Could not delete this time passage group. Please try again.");
     }
@@ -2753,6 +2884,7 @@ function syncModalFooterForMode() {
 
 function resetCreateGroupModal() {
     editingAccessGroupId = null;
+    setButtonLoading("btnModalCreate", false);
     document.getElementById("agNameInput").value = "";
     document.getElementById("startDateInput").value = "";
     document.getElementById("endDateInput").value = "";
@@ -2917,6 +3049,8 @@ async function submitCreateAccessGroup() {
     const savedDoor = selectedDoorName;
     const wasFromUserForm = _tpgFromUserForm;
     try {
+        setUiLoading("accessGroups", true);
+        setButtonLoading("btnModalCreate", true, editingAccessGroupId ? "SAVING..." : "CREATING...");
         await saveAccessGroupToStore(selectedDoorName, nextGroup);
 
         if (editingAccessGroupId) {
@@ -2931,6 +3065,8 @@ async function submitCreateAccessGroup() {
             accessGroupsByDoor[selectedDoorName].push(nextGroup);
         }
 
+        setUiLoading("accessGroups", false);
+        setButtonLoading("btnModalCreate", false);
         closeCreateAccessGroupModal();
 
         if (wasFromUserForm) {
@@ -2939,6 +3075,8 @@ async function submitCreateAccessGroup() {
             renderAccessGroupsPanel();
         }
     } catch (error) {
+        setUiLoading("accessGroups", false);
+        setButtonLoading("btnModalCreate", false);
         console.error("Failed to save access group:", error);
         errEl.textContent = "Could not save this time passage group. Please try again.";
     }
@@ -3008,7 +3146,9 @@ wireMenuKey(document.getElementById("menuUsers"), showUsersMainView);
 wireMenuKey(document.getElementById("menuDoorAccessGroup"), showDoorList);
 
 syncUserDeviceAccessVisibility();
+setUiLoading("appInit", true);
 renderDoors([]);
+renderUsersTable();
 initializeAppData();
 
 </script>
