@@ -299,8 +299,8 @@ button {
 
 .groups-section-title {
     margin: 0;
-    font-size: 11px;
-    color: #666;
+    font-size: 14px;
+    color: #999;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-weight: 600;
@@ -309,8 +309,8 @@ button {
 }
 
 .groups-controller-count {
-    font-size: 11px;
-    color: #666;
+    font-size: 14px;
+    color: #999;
     text-align: right;
     white-space: nowrap;
     flex-shrink: 0;
@@ -901,6 +901,32 @@ button {
     color: #8a8a8a;
     padding: 8px 0 4px;
     line-height: 1.4;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.btn-create-tpg-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin: 0;
+    padding: 6px 13px;
+    background: #1e3a2f;
+    color: #9effc8;
+    border: 1px solid #2d5c47;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-create-tpg-inline:hover {
+    background: #254d3d;
+    border-color: #3a7a5c;
 }
 
 .user-add-view .user-door-group-item {
@@ -1242,7 +1268,7 @@ button {
             </div>
 
             <div class="groups-panel-header">
-                <div class="groups-section-title">Access groups for this door</div>
+                <div class="groups-section-title">Time Passage groups for this door</div>
                 <div class="groups-controller-count" id="groupsControllerCount" aria-live="polite"></div>
             </div>
             <div id="accessGroupsPanel"></div>
@@ -1391,7 +1417,7 @@ button {
         <h2 id="modalScheduleTitle">Schedule</h2>
 
         <div style="margin-top: 20px;">
-            <label class="field-label" for="agNameInput">ACCESS GROUP NAME <span class="req">*</span></label>
+            <label class="field-label" for="agNameInput">TIME PASSAGE GROUP NAME <span class="req">*</span></label>
             <div class="input-wrap">
                 <input type="text" id="agNameInput" placeholder="e.g. Staff morning access" autocomplete="off">
             </div>
@@ -1439,7 +1465,7 @@ button {
 
         <div class="modal-footer">
             <button type="button" class="btn-cancel" id="btnModalCancel">CANCEL</button>
-            <button type="button" class="btn-create" id="btnModalCreate">CREATE ACCESS GROUP</button>
+            <button type="button" class="btn-create" id="btnModalCreate">CREATE TIME PASSAGE GROUP</button>
         </div>
     </div>
 </div>
@@ -1465,6 +1491,7 @@ const accessGroupsByDoor = {};
 let selectedDoorName = "";
 let modalVisibleTimeSlots = 1;
 let editingAccessGroupId = null;
+let _tpgFromUserForm = false;
 
 /** @type {{ id: string, fullName: string, email: string, username: string, password: string, phone: string, shareLink: boolean, mobileApp: boolean, phoneTap: boolean, remote: boolean, keyFob: boolean, fobId: string, doorAccess: Record<string, string[]>, createdAt: string }[]} */
 let usersRegistry = [];
@@ -1509,7 +1536,7 @@ function renderDoors(list) {
             <td class="action">
                 <button type="button" class="btn-manage-access" data-door="${safeName}" title="Open access groups for this door">
                     ${ICON_MANAGE_ACCESS}
-                    Manage access groups
+                    Manage Time Passage groups
                 </button>
             </td>
         </tr>
@@ -1555,7 +1582,13 @@ function renderUserDoorCheckboxes() {
         const groups = accessGroupsByDoor[door.name] || [];
         let groupsInner;
         if (groups.length === 0) {
-            groupsInner = `<div class="user-door-groups-empty">No access groups for this door yet. Add them under Door Access Group.</div>`;
+            groupsInner = `<div class="user-door-groups-empty">
+                <span>No Time Passage groups for this door yet.</span>
+                <button type="button" class="btn-create-tpg-inline" data-door="${safeDoor}">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                    Create Time Passage Group
+                </button>
+            </div>`;
         } else {
             groupsInner = groups.map(g => {
                 const gv = `${safeDoor}|${encodeURIComponent(g.id)}`;
@@ -1585,6 +1618,77 @@ function renderUserDoorCheckboxes() {
     wrap.querySelectorAll(".user-door-check").forEach(cb => {
         cb.addEventListener("change", () => syncDoorGroupsVisibility(cb));
     });
+
+    wrap.querySelectorAll(".btn-create-tpg-inline").forEach(btn => {
+        btn.addEventListener("click", e => {
+            e.preventDefault();
+            const doorName = decodeURIComponent(btn.getAttribute("data-door"));
+            openTPGModalFromUserForm(doorName);
+        });
+    });
+}
+
+/**
+ * Surgically re-renders just the groups panel for one door inside the user
+ * form checklist, preserving all other doors' checkbox + expansion states.
+ */
+function refreshUserDoorGroupsPanel(doorName) {
+    const wrap = document.getElementById("userDoorChecklist");
+    if (!wrap) return;
+
+    const safeDoor = encodeURIComponent(doorName);
+    const groups = accessGroupsByDoor[doorName] || [];
+
+    // Find the door block whose checkbox value matches this door
+    const doorBlock = Array.from(wrap.querySelectorAll(".user-door-block")).find(block => {
+        const cb = block.querySelector(".user-door-check");
+        return cb && decodeURIComponent(cb.value) === doorName;
+    });
+    if (!doorBlock) return;
+
+    const groupsPanel = doorBlock.querySelector(".user-door-groups");
+    if (!groupsPanel) return;
+
+    // Build new inner HTML for groups
+    let groupsInner;
+    if (groups.length === 0) {
+        groupsInner = `<div class="user-door-groups-empty">
+            <span>No Time Passage groups for this door yet.</span>
+            <button type="button" class="btn-create-tpg-inline" data-door="${safeDoor}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                Create Time Passage Group
+            </button>
+        </div>`;
+    } else {
+        groupsInner = groups.map(g => {
+            const gv = `${safeDoor}|${encodeURIComponent(g.id)}`;
+            const meta = escapeHtml(formatAccessGroupInlineSummary(g.schedule));
+            return `
+            <label class="user-door-group-item">
+                <input type="checkbox" name="userDoorGroup" value="${gv}">
+                <span class="user-door-group-text">
+                    <span class="user-door-group-name">${escapeHtml(g.name)}</span>
+                    <span class="user-door-group-details">${meta}</span>
+                </span>
+            </label>`;
+        }).join("");
+    }
+
+    groupsPanel.innerHTML = groupsInner;
+
+    // Ensure the panel stays open (door was checked/expanded when user clicked)
+    groupsPanel.classList.remove("is-collapsed");
+    const doorCb = doorBlock.querySelector(".user-door-check");
+    if (doorCb) doorCb.checked = true;
+
+    // Re-wire the inline create button if still needed
+    const inlineBtn = groupsPanel.querySelector(".btn-create-tpg-inline");
+    if (inlineBtn) {
+        inlineBtn.addEventListener("click", e => {
+            e.preventDefault();
+            openTPGModalFromUserForm(decodeURIComponent(inlineBtn.getAttribute("data-door")));
+        });
+    }
 }
 
 function syncUserDeviceAccessVisibility() {
@@ -1887,7 +1991,7 @@ function openDoorAccessGroups(doorName) {
     document.getElementById("doorDetailView").classList.remove("hidden");
     document.getElementById("detailDoorName").textContent = doorName;
     document.getElementById("detailPageHeading").innerHTML =
-        `Create and manage access group of <span class="detail-heading-door">${escapeHtml(doorName)}</span>`;
+        `Manage Time Passage group of <span class="detail-heading-door">${escapeHtml(doorName)}</span>`;
     setSidebarActive("door");
     renderAccessGroupsPanel();
 }
@@ -1904,13 +2008,13 @@ function renderAccessGroupsPanel() {
 
     if (door && door.controller === "BC220") {
         countEl.textContent =
-            `Controller ${door.controller}: up to ${BC220_MAX_ACCESS_GROUPS} access groups (${groups.length} / ${BC220_MAX_ACCESS_GROUPS}).`;
+            `Controller ${door.controller}: up to ${BC220_MAX_ACCESS_GROUPS} time passage groups (${groups.length} / ${BC220_MAX_ACCESS_GROUPS}).`;
     } else {
         countEl.textContent = "";
     }
 
     if (groups.length === 0) {
-        panel.innerHTML = `<div class="groups-empty">No access groups yet. Use the + button to create one.</div>`;
+        panel.innerHTML = `<div class="groups-empty">No Time Passage groups yet. Use the + button to create one.</div>`;
         return;
     }
 
@@ -2135,7 +2239,7 @@ function renderModalTimeSlots() {
 
 function syncModalFooterForMode() {
     document.getElementById("btnModalCreate").textContent =
-        editingAccessGroupId ? "SAVE CHANGES" : "CREATE ACCESS GROUP";
+        editingAccessGroupId ? "SAVE CHANGES" : "CREATE TIME PASSAGE GROUP";
 }
 
 function resetCreateGroupModal() {
@@ -2156,6 +2260,19 @@ function openCreateAccessGroupModal() {
     modal.classList.remove("hidden");
     modal.setAttribute("aria-hidden", "false");
     document.getElementById("agNameInput").focus();
+}
+
+function openTPGModalFromUserForm(doorName) {
+    selectedDoorName = doorName;
+    _tpgFromUserForm = true;
+    const door = getDoorByName(doorName);
+    const groups = accessGroupsByDoor[doorName] || [];
+    if (door && door.controller === "BC220" && groups.length >= BC220_MAX_ACCESS_GROUPS) {
+        alert(`Controller BC220 allows at most ${BC220_MAX_ACCESS_GROUPS} time passage groups per door.`);
+        _tpgFromUserForm = false;
+        return;
+    }
+    openCreateAccessGroupModal();
 }
 
 function openEditAccessGroup(groupId) {
@@ -2190,6 +2307,7 @@ function closeCreateAccessGroupModal() {
     modal.classList.add("hidden");
     modal.setAttribute("aria-hidden", "true");
     editingAccessGroupId = null;
+    _tpgFromUserForm = false;
     syncModalFooterForMode();
 }
 
@@ -2286,8 +2404,15 @@ function submitCreateAccessGroup() {
         });
     }
 
+    const savedDoor = selectedDoorName;
+    const wasFromUserForm = _tpgFromUserForm;
     closeCreateAccessGroupModal();
-    renderAccessGroupsPanel();
+
+    if (wasFromUserForm) {
+        refreshUserDoorGroupsPanel(savedDoor);
+    } else {
+        renderAccessGroupsPanel();
+    }
 }
 
 document.getElementById("btnAddAccessGroup").addEventListener("click", addAccessGroupForDoor);
